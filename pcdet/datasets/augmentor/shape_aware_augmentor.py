@@ -46,7 +46,7 @@ class ShapeAwareAugmentor(object):
         self.config = sampler_config
 
     @staticmethod
-    def dropout(gt_boxes, points, probability):
+    def dropout(gt_boxes, points, pyramid_pts, probability):
         """
         Args:
             gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
@@ -79,7 +79,7 @@ class ShapeAwareAugmentor(object):
         """
         pass
 
-    def extract_pyramid_points(self, data_dict):
+    def extract_pyramid_points_idxs(self, data_dict):
         """
         Args:
             data_dict:
@@ -88,7 +88,7 @@ class ShapeAwareAugmentor(object):
                 gt_names: optional, (N), string
                 ...
 
-        Returns: [{'pyramid_0,...5': (M', 3 + C_in)}] -> len=gt_boxes_num
+        Returns: [{'pyramid_0,...5': (M', )}] -> len=gt_boxes_num
         """
         gt_boxes = data_dict['gt_boxes']
         N = gt_boxes.shape[0]  # FIXME when gt_boxes is empty
@@ -119,21 +119,21 @@ class ShapeAwareAugmentor(object):
         points = transformation[:, 0:3, 0:3] @ points + transformation[:, 0:3, 3, None]
         in_box = (points < xyz_range[:, :, 0, None]) & (points > xyz_range[:, :, 1, None])
         in_box = in_box.all(axis=1)
-        box_pts = []
+        box_pts_idxs = []
         assert (N == in_box.shape[0])
         for i in range(N):
-            points = data_dict['points']
-            points = points[in_box[i, :], :]
-            box_pts.append(points)
+            box_pts_idxs.append(np.where(in_box[i, :])[0])
             # V.draw_scenes(
-            #     points=points, ref_boxes=gt_boxes
+            #     points=data_dict['points'][box_pts_idxs[i], :], ref_boxes=gt_boxes
             # )
             # mlab.show(stop=True)
-        # Step3. extract point cloud in pyramid [{'pyramid_0,...5': (M', 3+C)}] -> len=N
-        box_pyramid_pts = []
+        # Step3. extract point idxs in pyramid [{'pyramid_0,...5': (M', 3+C)}] -> len=N
+        pyramid_pts_idxs = []
         lwhs = data_dict['gt_boxes'][:, (3, 4, 5)]  # (N, 3)
+        points = data_dict['points']
         for obj in range(N):
-            ori_pts = box_pts[i]
+            valid = box_pts_idxs[obj]
+            ori_pts = points[valid, :]
             pyramid_points = dict()
             cam_pts = ori_pts[:, 0:3] @ transformation[obj, 0:3, 0:3].transpose() + \
                       transformation[obj, 0:3, 3, None].transpose()
@@ -152,14 +152,14 @@ class ShapeAwareAugmentor(object):
             label3 = label13 & (cam_pts[:, 1] >= 0)
             label4 = label45 & (cam_pts[:, 2] >= 0)
             label5 = label45 & (cam_pts[:, 2] < 0)
-            pyramid_points['pyramid_0'] = ori_pts[label0, :]
-            pyramid_points['pyramid_1'] = ori_pts[label1, :]
-            pyramid_points['pyramid_2'] = ori_pts[label2, :]
-            pyramid_points['pyramid_3'] = ori_pts[label3, :]
-            pyramid_points['pyramid_4'] = ori_pts[label4, :]
-            pyramid_points['pyramid_5'] = ori_pts[label5, :]
-            box_pyramid_pts.append(pyramid_points)
-        return box_pyramid_pts
+            pyramid_points['pyramid_0'] = valid[np.where(label0)[0]]
+            pyramid_points['pyramid_1'] = valid[np.where(label1)[0]]
+            pyramid_points['pyramid_2'] = valid[np.where(label2)[0]]
+            pyramid_points['pyramid_3'] = valid[np.where(label3)[0]]
+            pyramid_points['pyramid_4'] = valid[np.where(label4)[0]]
+            pyramid_points['pyramid_5'] = valid[np.where(label5)[0]]
+            pyramid_pts_idxs.append(pyramid_points)
+        return pyramid_pts_idxs
 
     def __call__(self, data_dict):
         """
@@ -172,9 +172,10 @@ class ShapeAwareAugmentor(object):
 
         Returns:
         """
-        obj_pyramid_pts = self.extract_pyramid_points(data_dict)
+        obj_pyramid_pts = self.extract_pyramid_points_idxs(data_dict)
+        points = data_dict['points']
         V.draw_scenes(
-            points=obj_pyramid_pts[0]['pyramid_0'][:, :], ref_boxes=data_dict['gt_boxes']
+            points=points[obj_pyramid_pts[0]['pyramid_0']], ref_boxes=data_dict['gt_boxes']
         )
         mlab.show(stop=True)
         exit(1)
