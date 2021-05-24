@@ -79,7 +79,7 @@ class ShapeAwareAugmentor(object):
         """
         pass
 
-    def __call__(self, data_dict):
+    def extract_pyramid_points(self, data_dict):
         """
         Args:
             data_dict:
@@ -88,42 +88,25 @@ class ShapeAwareAugmentor(object):
                 gt_names: optional, (N), string
                 ...
 
-        Returns:
+        Returns: [{'pyramid_0,...5': (M', 3 + C_in)}] -> len=gt_boxes_num
         """
         gt_boxes = data_dict['gt_boxes']
-        gt_boxes = gt_boxes[0, :].reshape([1, 7])
-        data_dict['gt_boxes'] = gt_boxes
         N = gt_boxes.shape[0]  # FIXME when gt_boxes is empty
-        ## generate pyramidal volumes for each gt_box (N, 6, 3, 4)
-        gt_heading = gt_boxes[:, 6][:, np.newaxis]  # (N, 1)
-        # rot matrix (N, 6, 3, 3)
-        # 4 pyramid on xy plane, [yaw, yaw-pi/2, yaw-pi, yaw-1.5pi] -> (N, 4, 3, 3)
-        headings = np.concatenate((gt_heading, gt_heading - np.pi / 2, gt_heading - np.pi, gt_heading - 1.5 * np.pi),
-                                  axis=1)
-        headings = headings[:, :, np.newaxis, np.newaxis]
-        rot_row1 = np.concatenate((np.cos(headings), -np.sin(headings), np.zeros([N, 4, 1, 1])), axis=3)
-        rot_row2 = np.concatenate((np.sin(headings), np.cos(headings), np.zeros([N, 4, 1, 1])), axis=3)
-        rot_row3 = np.concatenate((np.zeros([N, 4, 1, 1]), np.zeros([N, 4, 1, 1]), np.ones([N, 4, 1, 1])), axis=3)
-        rot = np.concatenate((rot_row1, rot_row2, rot_row3), axis=2)  # (N, 4, 3, 3)
-        # 2 pyramid up(z positive) and down(z negative) -> (N, 2, 3, 3)
-        rot_up = np.array([0, 0, -1, 0, 1, 0, 1, 0, 0]).reshape([3, 3])
-        rot_up = rot_up[np.newaxis, np.newaxis, :, :]
-        rot_up = np.repeat(rot_up, N, axis=0)
-        # rot_up[:, 0, :, :] = rot_row1[:, 0, :, :] @ rot_up[:, 0, :, :]
-        rot_down = np.array([0, 0, 1, 0, 1, 0, -1, 0, 0]).reshape([3, 3])
-        rot_down = rot_down[np.newaxis, np.newaxis, :, :]
-        rot_down = np.repeat(rot_down, N, axis=0)
-        # rot_down[:, 0, :, :] = rot_row1[:, 0, :, :] @ rot_down[:, 0, :, :]
-        rot = np.concatenate((rot, rot_up, rot_down), axis=1)
+        # Step1. get gt_box transformation matrix (N, 3, 4)
+        gt_heading = gt_boxes[:, 6][:, np.newaxis, np.newaxis]  # (N, 1)
+        # rot matrix (N, 3, 3)
+        rot_row1 = np.concatenate((np.cos(gt_heading), -np.sin(gt_heading), np.zeros([N, 1, 1])), axis=2)
+        rot_row2 = np.concatenate((np.sin(gt_heading), np.cos(gt_heading), np.zeros([N, 1, 1])), axis=2)
+        rot_row3 = np.concatenate((np.zeros([N, 1, 1]), np.zeros([N, 1, 1]), np.ones([N, 1, 1])), axis=2)
+        rot = np.concatenate((rot_row1, rot_row2, rot_row3), axis=1)  # (N, 3, 3)
         # translation
         gt_centers = gt_boxes[:, (0, 1, 2)]  # (N, 3)
-        gt_centers = gt_centers[:, np.newaxis, :, np.newaxis]
-        gt_centers = np.repeat(gt_centers, 6, axis=1)
+        gt_centers = gt_centers[:, :, np.newaxis]
         # assemble transformation matrix, [R.T, -R.T*t]
-        transformation = np.concatenate((rot, gt_centers), axis=3)
-        transformation[:, :, 0: 3, 0: 3] = np.transpose(transformation[:, :, 0: 3, 0: 3], (0, 1, 3, 2))
-        transformation[:, :, 0: 3, 3, None] = - transformation[:, :, 0: 3, 0: 3] @ transformation[:, :, 0:3, 3, None]
-        ## extract point cloud in bbox (N, M', 3+C) [(M', 3+C)] -> len=N
+        transformation = np.concatenate((rot, gt_centers), axis=2)
+        transformation[:, 0: 3, 0: 3] = np.transpose(transformation[:, 0: 3, 0: 3], (0, 2, 1))
+        transformation[:, 0: 3, 3, None] = - transformation[:, 0: 3, 0: 3] @ transformation[:, 0:3, 3, None]
+        # Step2. extract point cloud in bbox (N, M', 3+C) [(M', 3+C)] -> len=N
         lwh = data_dict['gt_boxes'][:, (3, 4, 5)]  # (N, 3)
         xyz_max = (lwh / 2)[:, :, np.newaxis]
         xyz_min = (- lwh / 2)[:, :, np.newaxis]
@@ -133,7 +116,7 @@ class ShapeAwareAugmentor(object):
         points = np.repeat(points, N, axis=0)
         points = np.transpose(points, (0, 2, 1))
         # corners3d = box_utils.boxes_to_corners_3d(gt_boxes)
-        points = transformation[:, 0, 0:3, 0:3] @ points + transformation[:, 0, 0:3, 3, None]
+        points = transformation[:, 0:3, 0:3] @ points + transformation[:, 0:3, 3, None]
         in_box = (points < xyz_range[:, :, 0, None]) & (points > xyz_range[:, :, 1, None])
         in_box = in_box.all(axis=1)
         box_pts = []
@@ -146,33 +129,17 @@ class ShapeAwareAugmentor(object):
             #     points=points, ref_boxes=gt_boxes
             # )
             # mlab.show(stop=True)
-        ## extract point cloud in pyramid [{'pyramid_0,...5': (M', 3+C)}] -> len=N
+        # Step3. extract point cloud in pyramid [{'pyramid_0,...5': (M', 3+C)}] -> len=N
+        box_pyramid_pts = []
         lwhs = data_dict['gt_boxes'][:, (3, 4, 5)]  # (N, 3)
-
-        # import pdb
-        # pdb.set_trace()
-        # 0, 2 -> w / l, h / l
-        # 1, 3 -> l / w, h / w
-        # 4, 5 -> w / h, l / h
-        cam_pyramid_thrd_02 = (lwhs[:, (1, 2)] / lwhs[:, 0, None]).reshape([N, 1, 2])  # (N, 1, 2)
-        cam_pyramid_thrd_13 = (lwhs[:, (0, 2)] / lwhs[:, 1, None]).reshape([N, 1, 2])  # (N, 1, 2)
-        cam_pyramid_thrd_45 = (lwhs[:, (1, 0)] / lwhs[:, 2, None]).reshape([N, 1, 2])  # (N, 1, 2)
-        cam_thrds = np.concatenate((cam_pyramid_thrd_02, cam_pyramid_thrd_13, cam_pyramid_thrd_02,
-                                    cam_pyramid_thrd_13, cam_pyramid_thrd_45, cam_pyramid_thrd_45), axis=1)  # (N, 6, 2)
-        # import pdb
-        # pdb.set_trace()
         for obj in range(N):
             ori_pts = box_pts[i]
-            # ori_pts = data_dict['points']
-            print("ori num is %d" % ori_pts.shape[0])
             pyramid_points = dict()
-            cam_pts = ori_pts[:, 0:3] @ transformation[obj, 0, 0:3, 0:3].transpose() + \
-                      transformation[obj, 0, 0:3, 3, None].transpose()
+            cam_pts = ori_pts[:, 0:3] @ transformation[obj, 0:3, 0:3].transpose() + \
+                      transformation[obj, 0:3, 3, None].transpose()
             y_div_x = cam_pts[:, 1] / cam_pts[:, 0]
             z_div_x = cam_pts[:, 2] / cam_pts[:, 0]
             z_div_y = cam_pts[:, 2] / cam_pts[:, 1]
-            # import pdb
-            # pdb.set_trace()
             w_div_l = lwhs[obj, 1] / lwhs[obj, 0]
             h_div_l = lwhs[obj, 2] / lwhs[obj, 0]
             h_div_w = lwhs[obj, 2] / lwhs[obj, 1]
@@ -191,48 +158,26 @@ class ShapeAwareAugmentor(object):
             pyramid_points['pyramid_3'] = ori_pts[label3, :]
             pyramid_points['pyramid_4'] = ori_pts[label4, :]
             pyramid_points['pyramid_5'] = ori_pts[label5, :]
-            # for cam in range(6):
-            #     key = 'pyramid_%s' % cam
-            #     cam_pts = ori_pts[:, 0:3] @ transformation[obj, cam, 0:3, 0:3].transpose() + \
-            #               transformation[obj, cam, 0:3, 3, None].transpose()
-            #     valid = cam_pts[:, 0] >= 0
-            #     if cam_pts[valid].shape[0] == 0:
-            #         pyramid_points[key] = cam_pts[valid, :]
-            #         continue
-            #     thrd_y_div_depth = cam_thrds[i, cam, 0]
-            #     thrd_z_div_depth = cam_thrds[i, cam, 1]
-            #     import pdb
-            #     pdb.set_trace()
-                # valid = valid & (np.abs(cam_pts[:, 1] / cam_pts[:, 0]) <= thrd_y_div_depth) & \
-                #         (np.abs(cam_pts[:, 2] / cam_pts[:, 0]) <= thrd_z_div_depth)
-                # pyramid_points[key] = ori_pts[valid, :]
-                # valids.append(valid)
-                # print('size is ', cam_pts[valid, :].shape)
-            print("pts num is %d, %d, %d, %d, %d, %d\n" % (pyramid_points['pyramid_0'].shape[0], pyramid_points['pyramid_1'].shape[0],
-                                                           pyramid_points['pyramid_2'].shape[0], pyramid_points['pyramid_3'].shape[0],
-                                                           pyramid_points['pyramid_4'].shape[0], pyramid_points['pyramid_5'].shape[0]))
-            # cam = 5
-            # ori_pts = ori_pts[:, 0:3] @ transformation[obj, cam, 0:3, 0:3].transpose() + \
-            #           transformation[obj, cam, 0:3, 3, None].transpose()
-            # valid = valids[0] | valids[1] | valids[2] | valids[3] | valids[4] | valids[5]
-            # tmp = ori_pts[~valid, :]
-            V.draw_scenes(
-                pyramid_points['pyramid_5'],
-                ref_boxes=gt_boxes
-            )
-            mlab.show(stop=True)
-            # V.draw_scenes2(
-            #     ori_pts,
-            #     pyramid_points['pyramid_0'],
-            #     pyramid_points['pyramid_1'],
-            #     pyramid_points['pyramid_2'],
-            #     pyramid_points['pyramid_3'],
-            #     pyramid_points['pyramid_4'],
-            #     pyramid_points['pyramid_5'],
-            #     ref_boxes=gt_boxes
-            # )
-            # mlab.show(stop=True)
-            exit(1)
+            box_pyramid_pts.append(pyramid_points)
+        return box_pyramid_pts
+
+    def __call__(self, data_dict):
+        """
+        Args:
+            data_dict:
+                points: (N, 3 + C_in)
+                gt_boxes: optional, (N, 7 + C) [x, y, z, dx, dy, dz, heading, ...]
+                gt_names: optional, (N), string
+                ...
+
+        Returns:
+        """
+        obj_pyramid_pts = self.extract_pyramid_points(data_dict)
+        V.draw_scenes(
+            points=obj_pyramid_pts[0]['pyramid_0'][:, :], ref_boxes=data_dict['gt_boxes']
+        )
+        mlab.show(stop=True)
+        exit(1)
         # points = points[in_box, :]
         ## project
         # V.draw_scenes(
