@@ -1,13 +1,13 @@
 import pickle
 
 import numpy as np
-import mayavi.mlab as mlab
+# import mayavi.mlab as mlab
 
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils import box_utils
 from ...utils import common_utils
 # from ....tools.visual_utils import visualize_utils as V
-from visual_utils import visualize_utils as V
+# from visual_utils import visualize_utils as V
 
 
 def global_rotation(gt_boxes, points, rot_range):
@@ -43,40 +43,6 @@ class ShapeAwareAugmentor(object):
 
         Returns:
         """
-        self.config = sampler_config
-
-    @staticmethod
-    def dropout(gt_boxes, points, pyramid_pts, probability):
-        """
-        Args:
-            gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
-            points: (M, 3 + C),
-            rot_range: [min, max]
-        Returns:
-        """
-        return gt_boxes, points
-        pass
-
-    @staticmethod
-    def sparsify(gt_boxes, points, probability):
-        """
-        Args:
-            gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
-            points: (M, 3 + C),
-            rot_range: [min, max]
-        Returns:
-        """
-        pass
-
-    @staticmethod
-    def swap(gt_boxes, points, probability):
-        """
-        Args:
-            gt_boxes: (N, 7 + C), [x, y, z, dx, dy, dz, heading, [vx], [vy]]
-            points: (M, 3 + C),
-            rot_range: [min, max]
-        Returns:
-        """
         pass
 
     def extract_pyramid_points_idxs(self, data_dict):
@@ -88,7 +54,7 @@ class ShapeAwareAugmentor(object):
                 gt_names: optional, (N), string
                 ...
 
-        Returns: [{'pyramid_0,...5': (M', )}] -> len=gt_boxes_num
+        Returns: (out_box_points, [{'pyramid_0,...5': (M', )}] -> len=gt_boxes_num)
         """
         gt_boxes = data_dict['gt_boxes']
         N = gt_boxes.shape[0]  # FIXME when gt_boxes is empty
@@ -119,6 +85,8 @@ class ShapeAwareAugmentor(object):
         points = transformation[:, 0:3, 0:3] @ points + transformation[:, 0:3, 3, None]
         in_box = (points < xyz_range[:, :, 0, None]) & (points > xyz_range[:, :, 1, None])
         in_box = in_box.all(axis=1)
+        out_box = ~(in_box.any(axis=0))
+        out_box_points = data_dict['points'][out_box, :]
         box_pts_idxs = []
         assert (N == in_box.shape[0])
         for i in range(N):
@@ -147,11 +115,11 @@ class ShapeAwareAugmentor(object):
             label13 = (z_div_y <= h_div_w) & (y_div_x >= w_div_l)
             label45 = (z_div_y >= h_div_w) & (z_div_x >= h_div_l)
             label0 = label02 & (cam_pts[:, 0] >= 0)
-            label2 = label02 & (cam_pts[:, 0] < 0)
-            label1 = label13 & (cam_pts[:, 1] < 0)
+            label2 = label02 & (cam_pts[:, 0] <= 0)
+            label1 = label13 & (cam_pts[:, 1] <= 0)
             label3 = label13 & (cam_pts[:, 1] >= 0)
             label4 = label45 & (cam_pts[:, 2] >= 0)
-            label5 = label45 & (cam_pts[:, 2] < 0)
+            label5 = label45 & (cam_pts[:, 2] <= 0)
             pyramid_points['pyramid_0'] = valid[np.where(label0)[0]]
             pyramid_points['pyramid_1'] = valid[np.where(label1)[0]]
             pyramid_points['pyramid_2'] = valid[np.where(label2)[0]]
@@ -159,7 +127,88 @@ class ShapeAwareAugmentor(object):
             pyramid_points['pyramid_4'] = valid[np.where(label4)[0]]
             pyramid_points['pyramid_5'] = valid[np.where(label5)[0]]
             pyramid_pts_idxs.append(pyramid_points)
-        return pyramid_pts_idxs
+        return out_box_points, pyramid_pts_idxs
+
+    @staticmethod
+    def dropout(pyramid_idxs, probability=0.2):
+        """
+        Args:
+            pyramid_idxs: [{'pyramid_0,...5': (M', )}] -> len=gt_boxes_num
+            probability: ,
+        Returns: pyramid_idxs
+        """
+        valid_pyramid_num = 0
+        for idxs in pyramid_idxs:
+            valid_pyramid_num += len(idxs.keys())
+        drop_out_num = np.int(valid_pyramid_num * probability)
+
+        N = len(pyramid_idxs)
+        pyramid_num = 6 * N
+        assert(valid_pyramid_num <= pyramid_num)
+        idxs = list(range(pyramid_num))
+        import random
+        random.shuffle(idxs)
+
+        drop = 0
+        for del_idx in idxs:
+            row = del_idx // 6
+            col = del_idx % 6
+            key = 'pyramid_%s' % col
+            if key in pyramid_idxs[row]:
+                drop += 1
+                pyramid_idxs[row].pop(key)
+            if drop >= drop_out_num:
+                break
+
+        return pyramid_idxs
+
+    @staticmethod
+    def sparsify(pyramid_idxs, probability=0.2, sparse_ratio=0.5):
+        """
+        Args:
+            pyramid_idxs: [{'pyramid_0,...5': (M', )}] -> len=gt_boxes_num
+            probability: ,
+        Returns: pyramid_idxs
+        """
+        # TODO call furthest_point_sampling_wrapper pcdet/ops/pointnet2/pointnet2_batch/pointnet2_utils.py line28
+        valid_pyramid_num = 0
+        for idxs in pyramid_idxs:
+            valid_pyramid_num += len(idxs.keys())
+        sparse_num = np.int(valid_pyramid_num * probability)
+
+        N = len(pyramid_idxs)
+        pyramid_num = 6 * N
+        assert(valid_pyramid_num <= pyramid_num)
+        idxs = list(range(pyramid_num))
+        import random
+        random.shuffle(idxs)
+
+        num = 0
+        for sparse_idx in idxs:
+            row = np.int(sparse_idx) // 6
+            col = np.int(sparse_idx) % 6
+            key = 'pyramid_%s' % col
+            if key in pyramid_idxs[row].keys():
+                num += 1
+                cur_pyramid_idxs = pyramid_idxs[row][key]
+                point_num = cur_pyramid_idxs.shape[0]
+                np.random.shuffle(cur_pyramid_idxs)
+                pyramid_idxs[row][key] = cur_pyramid_idxs[0: np.int((1-sparse_ratio)*point_num)]
+            if num >= sparse_num:
+                break
+
+        return pyramid_idxs
+
+    @staticmethod
+    def swap(gt_boxes, points, probability):
+        # TODO(LIJINGWEI)
+        pass
+
+    def cluster_points(self, full_points, obj_pyramid_idxs, out_points):
+        for obj in obj_pyramid_idxs:
+            for key in obj.keys():
+                out_points = np.concatenate((out_points, full_points[obj[key]]), axis=0)
+        return out_points
 
     def __call__(self, data_dict):
         """
@@ -172,63 +221,13 @@ class ShapeAwareAugmentor(object):
 
         Returns:
         """
-        obj_pyramid_pts = self.extract_pyramid_points_idxs(data_dict)
-        points = data_dict['points']
-        V.draw_scenes(
-            points=points[obj_pyramid_pts[0]['pyramid_0']], ref_boxes=data_dict['gt_boxes']
-        )
-        mlab.show(stop=True)
-        exit(1)
-        # points = points[in_box, :]
-        ## project
-        # V.draw_scenes(
-        #     points=data_dict['points'][:, :], ref_boxes=data_dict['gt_boxes']
-        # )
-        # mlab.show(stop=True)
-        # V.draw_scenes(
-        #     points=points[:, :], ref_boxes=data_dict['gt_boxes']
-        # )
-        # mlab.show(stop=True)
-        import pdb
-        pdb.set_trace()
-        # points = points[np.newaxis, np.newaxis, :, :]
-        # (N, M', 3+C)
-        # (N, 6, M'', 3+C), sum(M'') = M'
-        ## judge
-        frustum_headings = gt_heading, gt_heading - np.pi / 2, gt_heading - np.pi, gt_heading - 1.5 * np.pi, (
-        0, 0, -1), (0, 0, 1)  # (N, 3, 3)
-        pass
-
-        # gt_boxes = data_dict['gt_boxes']
-        # gt_names = data_dict['gt_names'].astype(str)
-        # existed_boxes = gt_boxes
-        # total_valid_sampled_dict = []
-        # for class_name, sample_group in self.sample_groups.items():
-        #     if self.limit_whole_scene:
-        #         num_gt = np.sum(class_name == gt_names)
-        #         sample_group['sample_num'] = str(int(self.sample_class_num[class_name]) - num_gt)
-        #     if int(sample_group['sample_num']) > 0:
-        #         sampled_dict = self.sample_with_fixed_number(class_name, sample_group)
-
-        #         sampled_boxes = np.stack([x['box3d_lidar'] for x in sampled_dict], axis=0).astype(np.float32)
-
-        #         if self.sampler_cfg.get('DATABASE_WITH_FAKELIDAR', False):
-        #             sampled_boxes = box_utils.boxes3d_kitti_fakelidar_to_lidar(sampled_boxes)
-
-        #         iou1 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], existed_boxes[:, 0:7])
-        #         iou2 = iou3d_nms_utils.boxes_bev_iou_cpu(sampled_boxes[:, 0:7], sampled_boxes[:, 0:7])
-        #         iou2[range(sampled_boxes.shape[0]), range(sampled_boxes.shape[0])] = 0
-        #         iou1 = iou1 if iou1.shape[1] > 0 else iou2
-        #         valid_mask = ((iou1.max(axis=1) + iou2.max(axis=1)) == 0).nonzero()[0]
-        #         valid_sampled_dict = [sampled_dict[x] for x in valid_mask]
-        #         valid_sampled_boxes = sampled_boxes[valid_mask]
-
-        #         existed_boxes = np.concatenate((existed_boxes, valid_sampled_boxes), axis=0)
-        #         total_valid_sampled_dict.extend(valid_sampled_dict)
-
-        # sampled_gt_boxes = existed_boxes[gt_boxes.shape[0]:, :]
-        # if total_valid_sampled_dict.__len__() > 0:
-        #     data_dict = self.add_sampled_boxes_to_scene(data_dict, sampled_gt_boxes, total_valid_sampled_dict)
-
-        # data_dict.pop('gt_boxes_mask')
+        out_box_pts, obj_pyramid_pts_idxs = self.extract_pyramid_points_idxs(data_dict)
+        num = 0
+        for obj in obj_pyramid_pts_idxs:
+            for key in obj.keys():
+                num += obj[key].shape[0]
+        obj_pyramid_pts_idxs = ShapeAwareAugmentor.dropout(obj_pyramid_pts_idxs, probability=1)
+        obj_pyramid_pts_idxs = ShapeAwareAugmentor.sparsify(obj_pyramid_pts_idxs, probability=0.2,
+                                                            sparse_ratio=0.5)
+        data_dict['points'] = self.cluster_points(data_dict['points'], obj_pyramid_pts_idxs, out_box_pts)
         return data_dict

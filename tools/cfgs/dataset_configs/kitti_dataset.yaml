@@ -43,6 +43,9 @@ DATA_AUGMENTOR:
         - NAME: random_world_scaling
           WORLD_SCALE_RANGE: [0.95, 1.05]
 
+        - NAME: shape_aware_sampling
+          PROBABILITY: [0.5, 0.5, 0.5]
+
 
 POINT_FEATURE_ENCODING: {
     encoding_type: absolute_coordinates_encoding,

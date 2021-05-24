@@ -3,7 +3,7 @@ from functools import partial
 import numpy as np
 
 from ...utils import common_utils
-from . import augmentor_utils, database_sampler
+from . import augmentor_utils, database_sampler, shape_aware_augmentor
 
 
 class DataAugmentor(object):
@@ -22,6 +22,10 @@ class DataAugmentor(object):
                     continue
             cur_augmentor = getattr(self, cur_cfg.NAME)(config=cur_cfg)
             self.data_augmentor_queue.append(cur_augmentor)
+
+    def shape_aware_sampling(self, config=None):
+        sa_sampler = shape_aware_augmentor.ShapeAwareAugmentor(sampler_config=config)
+        return sa_sampler
 
     def gt_sampling(self, config=None):
         db_sampler = database_sampler.DataBaseSampler(
