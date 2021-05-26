@@ -48,7 +48,9 @@ DATA_CONFIG:
               WORLD_SCALE_RANGE: [0.95, 1.05]
 
             - NAME: shape_aware_sampling
-              PROBABILITY: [0.5, 0.5, 0.5]
+              DROPOUT_PROBABILITY: 0.5
+              SPARSE_PROBABILITY: 0.5
+              SPARSE_RATIO: 0.5
 
 MODEL:
     NAME: PointPillar

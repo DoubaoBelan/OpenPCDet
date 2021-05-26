@@ -32,7 +32,9 @@ def global_rotation(gt_boxes, points, rot_range):
 
 
 class ShapeAwareAugmentor(object):
-    def __init__(self, sampler_config={"p0": 0.5, "p1": 0.5, "p2": 0.5}):
+    def __init__(self, sampler_config={"DROPOUT_PROBABILITY": 0.5,
+                                       "SPARSE_PROBABILITY": 0.5,
+                                       "SPARSE_RATIO": 0.5}):
         """
         Args:
             sampler_config:
@@ -43,7 +45,7 @@ class ShapeAwareAugmentor(object):
 
         Returns:
         """
-        pass
+        self.config = sampler_config
 
     def extract_pyramid_points_idxs(self, data_dict):
         """
@@ -226,8 +228,10 @@ class ShapeAwareAugmentor(object):
         for obj in obj_pyramid_pts_idxs:
             for key in obj.keys():
                 num += obj[key].shape[0]
-        obj_pyramid_pts_idxs = ShapeAwareAugmentor.dropout(obj_pyramid_pts_idxs, probability=1)
-        obj_pyramid_pts_idxs = ShapeAwareAugmentor.sparsify(obj_pyramid_pts_idxs, probability=0.2,
-                                                            sparse_ratio=0.5)
+        obj_pyramid_pts_idxs = ShapeAwareAugmentor.dropout(obj_pyramid_pts_idxs,
+                                                           probability=self.config['DROPOUT_PROBABILITY'])
+        obj_pyramid_pts_idxs = ShapeAwareAugmentor.sparsify(obj_pyramid_pts_idxs,
+                                                            probability=self.config['SPARSE_PROBABILITY'],
+                                                            sparse_ratio=self.config['SPARSE_RATIO'])
         data_dict['points'] = self.cluster_points(data_dict['points'], obj_pyramid_pts_idxs, out_box_pts)
         return data_dict
