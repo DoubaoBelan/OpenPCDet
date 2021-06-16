@@ -4,6 +4,8 @@ import numpy as np
 
 from ...ops.iou3d_nms import iou3d_nms_utils
 from ...utils import box_utils
+from ...utils import common_utils
+from ...ops.roiaware_pool3d import roiaware_pool3d_utils
 
 
 class DataBaseSampler(object):
@@ -141,8 +143,12 @@ class DataBaseSampler(object):
 
             obj_points_list.append(obj_points)
 
-        obj_points = np.concatenate(obj_points_list, axis=0)
         sampled_gt_names = np.array([x['name'] for x in total_valid_sampled_dict])
+        if True:
+            sampled_gt_boxes, sampled_gt_names, obj_points_list = \
+                self.filter_by_freespace(points, sampled_gt_boxes, sampled_gt_names, obj_points_list)
+
+        obj_points = np.concatenate(obj_points_list, axis=0)
 
         large_sampled_gt_boxes = box_utils.enlarge_box3d(
             sampled_gt_boxes[:, 0:7], extra_width=self.sampler_cfg.REMOVE_EXTRA_WIDTH
@@ -155,6 +161,25 @@ class DataBaseSampler(object):
         data_dict['gt_names'] = gt_names
         data_dict['points'] = points
         return data_dict
+
+    def filter_by_freespace(self, points, sampled_boxes, sampled_names, obj_pts_list):
+        boxes3d, is_numpy = common_utils.check_numpy_to_torch(sampled_boxes)
+        points, is_numpy = common_utils.check_numpy_to_torch(points)
+        point_masks = roiaware_pool3d_utils.points_in_boxes_cpu(points[:, 0:3], boxes3d)
+        valid_mask = []
+        for row in range(point_masks.shape[0]):
+            plane_z = sampled_boxes[row, 2] - sampled_boxes[row, 5] / 2
+            box_pts = points[point_masks[row, :] == 1, :]
+            ratio = ((box_pts[:, 2] - plane_z) > 0.3).sum().float() / box_pts.shape[0]
+            valid_mask.append(True) if ratio < 0.1 else valid_mask.append(False)
+
+        sampled_boxes = sampled_boxes[valid_mask, :]
+        sampled_names = sampled_names[valid_mask]
+        valid_obj_pts = []
+        for i in range(len(valid_mask)):
+            if valid_mask[i]:
+                valid_obj_pts.append(obj_pts_list[i])
+        return sampled_boxes, sampled_names, valid_obj_pts
 
     def __call__(self, data_dict):
         """
