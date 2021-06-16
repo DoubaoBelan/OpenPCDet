@@ -148,7 +148,9 @@ class DataBaseSampler(object):
             sampled_gt_boxes, sampled_gt_names, obj_points_list = \
                 self.filter_by_freespace(points, sampled_gt_boxes, sampled_gt_names, obj_points_list)
 
-        obj_points = np.concatenate(obj_points_list, axis=0)
+        obj_points = np.zeros([0, 4])
+        if len(obj_points_list) != 0:
+            obj_points = np.concatenate(obj_points_list, axis=0)
 
         large_sampled_gt_boxes = box_utils.enlarge_box3d(
             sampled_gt_boxes[:, 0:7], extra_width=self.sampler_cfg.REMOVE_EXTRA_WIDTH
