@@ -37,6 +37,10 @@ DATA_CONFIG:
               DATABASE_WITH_FAKELIDAR: False
               REMOVE_EXTRA_WIDTH: [0.0, 0.0, 0.0]
               LIMIT_WHOLE_SCENE: False
+              FREESPACE_THRESHOLD: {
+                  plane_height: 0.3,
+                  plane_point_rate: 0.1
+              }
 
             - NAME: random_world_flip
               ALONG_AXIS_LIST: ['x']
